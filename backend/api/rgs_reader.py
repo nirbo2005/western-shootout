@@ -8,16 +8,15 @@ from typing import Dict, Any, Optional
 
 class RGSReader:
     def __init__(self):
-        # A root_path továbbra is a fizikai mappa nevét ('western_shootout') használja
+        # A root_path most már a hivatalos game_id mappára (stake_western_95) mutat
         self.root_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), 
             "..", 
             "math-sdk", 
             "games", 
-            "western_shootout", 
+            "stake_western_95", 
             "library"
         ))
-        # ...
         self.cache: Dict[str, dict] = {}
         self.load_all_data()
 
@@ -27,16 +26,17 @@ class RGSReader:
         for mode in modes:
             book_file = f"books_{mode}.jsonl.zst"
             csv_file = f"lookUpTable_{mode}.csv"
+            csv_file_opt = f"lookUpTable_{mode}_0.csv"
             
-            # Ellenőrizzük a 'books'/'lookup_tables' és a 'publish_files' mappát is
             book_paths = [
                 os.path.join(self.root_path, "publish_files", book_file),
                 os.path.join(self.root_path, "books", book_file)
             ]
             csv_paths = [
                 os.path.join(self.root_path, "publish_files", csv_file),
+                os.path.join(self.root_path, "publish_files", csv_file_opt),
                 os.path.join(self.root_path, "lookup_tables", csv_file),
-                os.path.join(self.root_path, "lookup_tables", f"lookUpTable_{mode}_0.csv") # Optimalizált fájl fallback
+                os.path.join(self.root_path, "lookup_tables", csv_file_opt)
             ]
             
             valid_book = next((p for p in book_paths if os.path.exists(p)), None)
@@ -44,7 +44,6 @@ class RGSReader:
 
             if valid_book and valid_csv:
                 try:
-                    # 1. JSONL beolvasása dictionary-be az ID alapján
                     books_dict = {}
                     with open(valid_book, 'rb') as f:
                         dctx = zstd.ZstdDecompressor()
@@ -54,7 +53,6 @@ class RGSReader:
                                 row = json.loads(line)
                                 books_dict[row['id']] = row
                     
-                    # 2. CSV beolvasása és kumulatív súlyok felépítése az RTP optimalizációhoz
                     cum_weights = []
                     sim_ids = []
                     current_cum = 0
@@ -66,12 +64,12 @@ class RGSReader:
                                 continue
                             try:
                                 sim_id = int(row[0])
-                                weight = int(row[1]) # Az uint64 valószínűség
+                                weight = int(row[1])
                                 current_cum += weight
                                 cum_weights.append(current_cum)
                                 sim_ids.append(sim_id)
                             except ValueError:
-                                continue # Fejléc átugrása
+                                continue 
 
                     self.cache[mode] = {
                         'books': books_dict,
@@ -86,7 +84,6 @@ class RGSReader:
                 print(f"WARNING: Missing book or CSV for {mode}.")
 
     def get_row_by_float(self, mode: str, result_float: float) -> Optional[Dict[str, Any]]:
-        # Biztonsági ellenőrzés: ha nincs olyan mód, visszaesünk base-re
         current_mode = mode if mode in self.cache and self.cache[mode] else "base"
         
         if current_mode not in self.cache or not self.cache[current_mode]:
@@ -98,14 +95,11 @@ class RGSReader:
         if total_weight == 0:
             return None
             
-        # 1. Célsúly meghatározása a bejövő RNG float alapján
         target_weight = result_float * total_weight
         
-        # 2. Bináris keresés (bisect) a kumulatív súlyok között a megfelelő indexhez
         idx = bisect.bisect_right(data['cum_weights'], target_weight)
-        idx = min(idx, len(data['sim_ids']) - 1) # Biztonsági limit [0, 1.0) float miatt
+        idx = min(idx, len(data['sim_ids']) - 1)
         
-        # 3. ID lekérése és a hozzá tartozó JSONL rekord visszaadása
         selected_id = data['sim_ids'][idx]
         return data['books'].get(selected_id)
 

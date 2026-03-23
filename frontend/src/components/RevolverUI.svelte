@@ -11,17 +11,23 @@
         { x: 20, y: 32 }   // 10 óra
     ];
 
-    // Minden lövés után 60 fokot fordul a henger.
+    // Folyamatos forgás minden lépésnél, támogatva a végtelen hosszúságú (6+ körös) minigame-eket
     $: rotation = ($currentRound - 1) * 60;
 
-    // Ciklikus indexelés (0-5), hogy végtelen lövésnél is működjön
+    // Modulo 6 logika: az aktív kamra mindig 0 és 5 között marad
     $: activeIndex = ($currentRound - 1) % 6;
 
-    // Vizuális újratöltés: ha a kör átlépi a 6-ot, egy virtuális új hengert mutatunk
+    // A vizuális töltények állapota
     $: displayChambers = positions.map((_, i) => {
-        if ($currentRound <= 6) return $chambers[i];
-        // Új henger esetén: az aktuális és a még hátralévő kamrák telik (kivéve, ha a store mást mond az aktuálisról)
-        return i > activeIndex || (i === activeIndex && $chambers[activeIndex]);
+        // Group shootoutnál és hosszú döntetlennél, ha az engine vizuálisan nem tölt újra
+        // (nem reseteli a chambers store-t), kikényszerítjük, hogy az aktív index utáni kamrák 
+        // egy új ciklusban teleinek látszódjanak, a kilőttek pedig üresnek.
+        if (i < activeIndex) {
+            return false; // Ebben a % 6 -os "henger ciklusban" már elsütöttük
+        }
+        // Az aktuális és a hátralévő kamrákhoz lekérjük a valós store állapotot
+        // Ha az aktuális épp elsül (store szerint false), az is látszani fog (empty).
+        return $chambers[i];
     });
 </script>
 

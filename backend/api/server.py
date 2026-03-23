@@ -1,16 +1,16 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 from typing import Optional
 
 from rgs_reader import rgs_reader
 from provably_fair import ProvablyFair
+from schemas import PlayRequest, EndRoundRequest, PlayResponse, StatusResponse, RotateSeedResponse
 
 app = FastAPI(title="Western Shootout RGS")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Fejlesztési környezetben engedékenyebb
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -24,17 +24,7 @@ class PFState:
 
 pf = PFState()
 
-class PlayRequest(BaseModel):
-    bet: float = Field(..., gt=0)
-    base_bet: float = Field(..., gt=0)
-    mode: str
-    client_seed: Optional[str] = None
-
-class EndRoundRequest(BaseModel):
-    # A Stake RGS architektúrában az end-round zárja le az aktív kört
-    pass
-
-@app.get("/status")
+@app.get("/status", response_model=StatusResponse)
 async def get_status():
     return {
         "status": "ready",
@@ -43,7 +33,7 @@ async def get_status():
         "client_seed": pf.client_seed
     }
 
-@app.post("/rotate-seed")
+@app.post("/rotate-seed", response_model=RotateSeedResponse)
 async def rotate_seed():
     old_seed = getattr(pf.engine, 'server_seed', getattr(pf.engine, 'current_server_seed', None))
     new_hash = pf.engine.rotate_server_seed()
@@ -55,7 +45,7 @@ async def rotate_seed():
         "nonce": pf.nonce
     }
 
-@app.post("/play")
+@app.post("/play", response_model=PlayResponse)
 async def play(req: PlayRequest):
     pf.nonce += 1
     if req.client_seed:
@@ -63,42 +53,55 @@ async def play(req: PlayRequest):
 
     current_server_seed = getattr(pf.engine, 'server_seed', getattr(pf.engine, 'current_server_seed', None))
 
-    # RNG (0.0 - 1.0) generálása a Provably Fair motorral
     result_float = pf.engine.generate_result(
         current_server_seed,
         pf.client_seed,
         pf.nonce
     )
     
-    # Sor lekérése az rgs_reader segítségével (ami már a súlytáblát használja)
     outcome = rgs_reader.get_row_by_float(req.mode, result_float)
     
     if not outcome:
         raise HTTPException(status_code=500, detail=f"Mode '{req.mode}' simulation failed or not found.")
 
-    # A data_format.md alapján a payoutMultiplier 100-as bázisú int (pl. 250 = 2.5x)
-    payout_multiplier_int = outcome.get("payoutMultiplier", 0)
-    multiplier_float = payout_multiplier_int / 100.0
-    
-    # A frontend a teljes events tömböt várja az animációkhoz
     events = outcome.get("events", [])
+    multiplier_float = 0.0
+    
+    # 1. BIZTOSÍTÉK: Kiolvasás a round_data-ból
+    for ev in events:
+        if isinstance(ev, dict) and "round_data" in ev:
+            rd = ev["round_data"]
+            if "multiplier" in rd:
+                try:
+                    multiplier_float = float(rd["multiplier"])
+                except:
+                    pass
+                break
+                
+    # 2. VÉSZTARTALÉK
+    if multiplier_float == 0.0:
+        mode_costs = {"base": 1.0, "armor": 1.5, "magnet": 1.8, "extreme": 2.3}
+        cost = mode_costs.get(req.mode, 1.0)
+        bgw = outcome.get("baseGameWins", 0.0)
+        try:
+            multiplier_float = float(bgw) / cost if bgw != "" else 0.0
+        except:
+            multiplier_float = 0.0
 
     return {
         "bet": req.bet,
-        "multiplier": multiplier_float,
-        "payout": round(req.bet * multiplier_float, 2), # Kifizetés = összköltség (bet) * szorzó
+        "base_bet": req.base_bet,
+        "multiplier": round(multiplier_float, 2),
+        "payout": round(req.base_bet * multiplier_float, 2),
         "events": events,
         "server_seed_hash": pf.engine.get_current_server_seed_hash(),
         "nonce": pf.nonce,
-        "result_float": result_float
+        "result_float": result_float,
+        "selected_character": req.selected_character
     }
 
 @app.post("/end-round")
 async def end_round(req: EndRoundRequest):
-    """
-    A Stake keretrendszerben a nyertes köröket manuálisan le kell zárni 
-    a kifizetés jóváírásához (ha auto_close_disabled=False, de frontendről ez a standard hívás).
-    """
     return {"status": "success", "message": "Round closed successfully"}
 
 if __name__ == "__main__":

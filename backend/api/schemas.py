@@ -5,6 +5,7 @@ class PlayRequest(BaseModel):
     bet: float = Field(..., gt=0)
     base_bet: float = Field(..., gt=0)
     mode: str
+    selected_character: str = Field(default="hero")
     client_seed: Optional[str] = None
 
 class EndRoundRequest(BaseModel):
@@ -23,9 +24,11 @@ class RotateSeedResponse(BaseModel):
 
 class PlayResponse(BaseModel):
     bet: float
+    base_bet: float
     multiplier: float
     payout: float
     events: List[Dict[str, Any]]
     server_seed_hash: str
     nonce: int
     result_float: float
+    selected_character: str

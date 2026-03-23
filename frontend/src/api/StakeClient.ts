@@ -49,13 +49,13 @@ export class StakeClient {
         }
     }
 
-    // A régi 'shoot' átnevezve a standard 'play'-re
-    public async play(totalBet: number, baseBet: number, mode: string): Promise<DuelResponse> {
+    public async play(totalBet: number, baseBet: number, mode: string, selectedCharacter: string = 'hero'): Promise<DuelResponse> {
         try {
             const payload = {
                 bet: totalBet,
                 base_bet: baseBet,
                 mode: mode,
+                selected_character: selectedCharacter,
                 client_seed: get(clientSeed)
             };
 
@@ -77,7 +77,6 @@ export class StakeClient {
 
             const data: DuelResponse = await response.json();
 
-            // Kinyerjük a round_data-t a matematikai events tömbből
             const winEvent = data.events.find((e: RgsEvent) => e.round_data !== undefined);
             const roundData = winEvent?.round_data;
 
@@ -97,7 +96,6 @@ export class StakeClient {
 - Lépések: [${stepsFormatted}]`);
             }
 
-            // Frissítjük a provably fair adatokat
             if (data.server_seed_hash) {
                 serverSeedHash.set(data.server_seed_hash);
             }
@@ -105,7 +103,6 @@ export class StakeClient {
                 currentNonce.set(data.nonce);
             }
 
-            // FONTOS: Csak a tétet vonjuk le. A nyereményt az endRound fogja hozzáadni!
             currentBalance.update(b => b - totalBet);
 
             return data;
@@ -118,7 +115,6 @@ export class StakeClient {
         }
     }
 
-    // ÚJ: A Stake standard körlezáró hívása
     public async endRound(payout: number): Promise<void> {
         try {
             const response = await fetch(`${this.BASE_URL}/end-round`, {
@@ -126,14 +122,13 @@ export class StakeClient {
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({}) // A jelenlegi backend setup nem vár paramétert
+                body: JSON.stringify({})
             });
 
             if (!response.ok) {
                 throw new Error(`End-round hiba: ${response.status}`);
             }
 
-            // Ha sikeres a hívás, jóváírjuk a nyereményt a lokális egyenlegen
             if (payout > 0) {
                 currentBalance.update(b => b + payout);
                 console.log(`[RGS END-ROUND] Sikeres körlezárás. Jóváírva: ${payout}`);

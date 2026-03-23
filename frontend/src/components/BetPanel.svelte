@@ -7,27 +7,27 @@
         isMagnetActive, 
         isArmorActive,
         potentialMaxWin,
-        duelCooldown
+        duelCooldown,
+        selectedCharacter
     } from '../store/GameStore';
     import { stakeClient } from '../api/StakeClient';
     import { sequencePlayer } from '../game/SequencePlayer';
     import { gameEngine } from '../game/GameEngine';
 
-    // Dinamikusan meghatározzuk a mód nevét a backend számára
-    $: backendMode = (() => {
-        if ($isMagnetActive && $isArmorActive) return 'extreme';
-        if ($isMagnetActive) return 'magnet';
-        if ($isArmorActive) return 'armor';
-        return 'base';
-    })();
+    $: backendMode = ($isMagnetActive && $isArmorActive) ? 'extreme' : 
+                     $isMagnetActive ? 'magnet' : 
+                     $isArmorActive ? 'armor' : 'base';
 
-    // Vizuális frissítés, ha változnak a beállítások
     $: {
+        // Reaktív függőségek explicit megadása a real-time frissítéshez
+        $isMagnetActive;
+        $isArmorActive;
+        $selectedCharacter;
+
         if (gameEngine && $gameState === 'IDLE') {
             try {
                 gameEngine.updateVisualsFromStores();
             } catch (e) {
-                // Silent catch inicializálási fázisra
             }
         }
     }
@@ -38,23 +38,31 @@
         const activeBaseBet = $baseBet;
         const activeTotalBet = $totalBet;
         const modeToSend = backendMode;
+        const charToSend = $selectedCharacter;
         
         try {
-            // Frissítve a standard Stake RGS '/play' hívásra
-            const response = await stakeClient.play(activeTotalBet, activeBaseBet, modeToSend);
+            const response = await stakeClient.play(activeTotalBet, activeBaseBet, modeToSend, charToSend);
             await sequencePlayer.play(response);
         } catch (error) {
-            console.error("Bet hiba:", error);
+            console.error(error);
             gameState.set('IDLE');
         }
     }
 
     function quickBet(mult: number) {
         if ($gameState !== 'IDLE') return;
-        baseBet.update(v => {
+        baseBet.update((v: number) => {
             const newVal = Number((v * mult).toFixed(2));
             return newVal < 0.1 ? 0.1 : newVal;
         });
+    }
+
+    function toggleMagnet() {
+        isMagnetActive.update((v: boolean) => !v);
+    }
+
+    function toggleArmor() {
+        isArmorActive.update((v: boolean) => !v);
     }
 </script>
 
@@ -62,6 +70,28 @@
     <div class="balance-display">
         <span class="label">Egyenleg</span>
         <span class="value">${$currentBalance.toFixed(2)}</span>
+    </div>
+
+    <div class="input-group">
+        <div class="label">Karakter Választás</div>
+        <div class="char-selection">
+            <button 
+                class="char-btn" 
+                class:active={$selectedCharacter === 'hero'}
+                on:click={() => selectedCharacter.set('hero')}
+                disabled={$gameState !== 'IDLE'}
+            >
+                Hős (Bal)
+            </button>
+            <button 
+                class="char-btn" 
+                class:active={$selectedCharacter === 'bandit'}
+                on:click={() => selectedCharacter.set('bandit')}
+                disabled={$gameState !== 'IDLE'}
+            >
+                Bandita (Jobb)
+            </button>
+        </div>
     </div>
 
     <div class="input-group">
@@ -84,7 +114,7 @@
         <button 
             class="mod-btn" 
             class:active={$isMagnetActive}
-            on:click={() => isMagnetActive.update(v => !v)}
+            on:click={toggleMagnet}
             disabled={$gameState !== 'IDLE'}
         >
             Mágnes (+80%)
@@ -92,7 +122,7 @@
         <button 
             class="mod-btn" 
             class:active={$isArmorActive}
-            on:click={() => isArmorActive.update(v => !v)}
+            on:click={toggleArmor}
             disabled={$gameState !== 'IDLE'}
         >
             Páncél (+50%)
@@ -106,7 +136,7 @@
         </div>
         <div class="info-row highlight">
             <span>Alap nyeremény (2x):</span>
-            <span>${($totalBet * 2).toFixed(2)}</span>
+            <span>${($baseBet * 2).toFixed(2)}</span>
         </div>
         <div class="info-row extra">
             <span>Max Win (500x):</span>
@@ -129,3 +159,30 @@
         {/if}
     </button>
 </div>
+
+<style>
+    .char-selection {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+    }
+    .char-btn {
+        flex: 1;
+        padding: 0.5rem;
+        background: #2a2a35;
+        color: #fff;
+        border: 2px solid transparent;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+    .char-btn.active {
+        background: #4a4a5a;
+        border-color: #fca311;
+        font-weight: bold;
+    }
+    .char-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+</style>

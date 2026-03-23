@@ -5,12 +5,8 @@ class GameCalculations:
     def __init__(self, gamestate):
         self.gamestate = gamestate
 
-    def get_hit_target(self, is_player_attacker: bool, bet_mode_obj) -> str:
+    def get_hit_target(self, is_player_attacker: bool, conditions: dict) -> str:
         """Meghatározza a találat helyét a módosítók (Magnet) alapján."""
-        conditions = {}
-        if hasattr(bet_mode_obj, 'distributions') and len(bet_mode_obj.distributions) > 0:
-            conditions = bet_mode_obj.distributions[0].conditions
-
         magnet_mult = conditions.get("magnet_multiplier", 1.0)
         
         # Alap találati esélyek
@@ -27,12 +23,8 @@ class GameCalculations:
         if rand < 0.7: return Events.TARGET_BODY
         return Events.TARGET_LEGS
 
-    def calculate_damage(self, zone: str, is_player_receiving: bool, bet_mode_obj) -> float:
+    def calculate_damage(self, zone: str, is_player_receiving: bool, conditions: dict) -> float:
         """Kiszámolja a sebzést a módosítók (Armor) alapján."""
-        conditions = {}
-        if hasattr(bet_mode_obj, 'distributions') and len(bet_mode_obj.distributions) > 0:
-            conditions = bet_mode_obj.distributions[0].conditions
-            
         armor_mult = conditions.get("armor_multiplier", 1.0)
 
         damage_map = {

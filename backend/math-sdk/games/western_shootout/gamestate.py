@@ -19,28 +19,39 @@ class GameState(GameStateOverride):
     def run_spin(self, sim, simulation_seed=None):
         self.reset_seed(sim)
         self.reset_book()
-
-        # FONTOS: Az SDK a betmode változót belsőleg kezeli, 
-        # de a biztonság kedvéért lekérjük az objektumot.
-        bet_mode_obj = self.get_current_betmode()
-        cost = bet_mode_obj._cost if hasattr(bet_mode_obj, '_cost') else 1.0
         
+        self.spin_payout = 0
+        self.free_payout = 0
+
+        bet_mode_obj = self.get_current_betmode()
+        cost = getattr(bet_mode_obj, '_cost', getattr(bet_mode_obj, 'cost', 1.0))
+        
+        # KONDÍCIÓK KINYERÉSE (Ezt kell használni a harcban!)
         conditions = {}
-        if hasattr(bet_mode_obj, 'distributions') and len(bet_mode_obj.distributions) > 0:
-            conditions = bet_mode_obj.distributions[0].conditions
+        dist = self.get_current_betmode_distributions()
+        if hasattr(dist, 'conditions'):
+            conditions = dist.conditions
+        elif hasattr(dist, '_conditions'):
+            conditions = dist._conditions
+        elif isinstance(dist, dict) and 'conditions' in dist:
+            conditions = dist['conditions']
         
         force_group = conditions.get("force_group_shootout", False)
+        force_angel = conditions.get("force_angel_revive", False)
         force_wincap = conditions.get("force_wincap", False)
+        
+        draw_chance = conditions.get("base_draw_chance", 0.150)
+        win_chance = conditions.get("base_win_chance", 0.290)
 
         if force_group:
             event_type = Events.GROUP_SHOOTOUT
+        elif force_angel:
+            event_type = Events.ANGEL_REVIVE
         else:
             rand_type = random.random()
-            if rand_type < 0.02:
-                event_type = Events.ANGEL_REVIVE
-            elif rand_type < 0.15:
+            if rand_type < draw_chance:
                 event_type = Events.STANDARD_DRAW
-            elif rand_type < 0.45:
+            elif rand_type < (draw_chance + win_chance):
                 event_type = Events.STANDARD_WIN
             else:
                 event_type = Events.STANDARD_LOSE
@@ -53,19 +64,27 @@ class GameState(GameStateOverride):
         if event_type in [Events.STANDARD_WIN, Events.STANDARD_LOSE]:
             turn = Events.SHOOTER_PLAYER if random.random() > 0.5 else Events.SHOOTER_ENEMY
             
-            while p_hp > 0 and e_hp > 0:
+            while p_hp > 0 and e_hp > 0 and len(duel_steps) < 12:
                 attacker = turn
                 is_p_atk = (attacker == Events.SHOOTER_PLAYER)
                 
-                # A számításoknak az aktuális objektumot adjuk át
-                zone = self.calc.get_hit_target(is_p_atk, bet_mode_obj)
-                
-                if event_type == Events.STANDARD_WIN and not is_p_atk and p_hp <= 34:
-                    zone = Events.TARGET_FAIL
-                elif event_type == Events.STANDARD_LOSE and is_p_atk and e_hp <= 34:
-                    zone = Events.TARGET_FAIL
+                if (event_type == Events.STANDARD_WIN and is_p_atk and len(duel_steps) >= 10) or \
+                   (event_type == Events.STANDARD_LOSE and not is_p_atk and len(duel_steps) >= 10):
+                    zone = Events.TARGET_HEAD
+                    damage = e_hp if is_p_atk else p_hp
+                else:
+                    # JAVÍTVA: bet_mode_obj helyett conditions!
+                    zone = self.calc.get_hit_target(is_p_atk, conditions)
+                    damage = self.calc.calculate_damage(zone, not is_p_atk, conditions)
                     
-                damage = self.calc.calculate_damage(zone, not is_p_atk, bet_mode_obj)
+                    if event_type == Events.STANDARD_WIN and not is_p_atk:
+                        if p_hp - damage <= 0:
+                            zone = Events.TARGET_FAIL
+                            damage = 0.0
+                    elif event_type == Events.STANDARD_LOSE and is_p_atk:
+                        if e_hp - damage <= 0:
+                            zone = Events.TARGET_FAIL
+                            damage = 0.0
                 
                 if zone != Events.TARGET_FAIL:
                     if is_p_atk:
@@ -76,8 +95,8 @@ class GameState(GameStateOverride):
                 duel_steps.append({
                     "Shooter": attacker,
                     "Target": zone,
-                    "PlayerHP": p_hp,
-                    "EnemyHP": e_hp
+                    "PlayerHP": float(p_hp),
+                    "EnemyHP": float(e_hp)
                 })
                 turn = Events.SHOOTER_ENEMY if turn == Events.SHOOTER_PLAYER else Events.SHOOTER_PLAYER
 
@@ -86,32 +105,28 @@ class GameState(GameStateOverride):
 
         elif event_type == Events.STANDARD_DRAW:
             turn = Events.SHOOTER_PLAYER if random.random() > 0.5 else Events.SHOOTER_ENEMY
-            draw_length = random.randint(6, 10)
+            draw_length = 12 
             
             while len(duel_steps) < draw_length:
                 attacker = turn
                 is_p_atk = (attacker == Events.SHOOTER_PLAYER)
+                # JAVÍTVA: bet_mode_obj helyett conditions!
+                zone = self.calc.get_hit_target(is_p_atk, conditions)
+                damage = self.calc.calculate_damage(zone, not is_p_atk, conditions)
                 
-                zone = self.calc.get_hit_target(is_p_atk, bet_mode_obj)
-                
-                if is_p_atk and e_hp <= 34:
+                if is_p_atk and (e_hp - damage <= 0):
                     zone = Events.TARGET_FAIL
-                elif not is_p_atk and p_hp <= 34:
+                    damage = 0.0
+                elif not is_p_atk and (p_hp - damage <= 0):
                     zone = Events.TARGET_FAIL
-                    
-                damage = self.calc.calculate_damage(zone, not is_p_atk, bet_mode_obj)
+                    damage = 0.0
                 
                 if zone != Events.TARGET_FAIL:
-                    if is_p_atk:
-                        e_hp = max(0.0, round(e_hp - damage, 1))
-                    else:
-                        p_hp = max(0.0, round(p_hp - damage, 1))
+                    if is_p_atk: e_hp = max(0.0, round(e_hp - damage, 1))
+                    else: p_hp = max(0.0, round(p_hp - damage, 1))
 
                 duel_steps.append({
-                    "Shooter": attacker,
-                    "Target": zone,
-                    "PlayerHP": p_hp,
-                    "EnemyHP": e_hp
+                    "Shooter": attacker, "Target": zone, "PlayerHP": float(p_hp), "EnemyHP": float(e_hp)
                 })
                 turn = Events.SHOOTER_ENEMY if turn == Events.SHOOTER_PLAYER else Events.SHOOTER_PLAYER
 
@@ -127,85 +142,85 @@ class GameState(GameStateOverride):
             winner, final_multiplier = Events.SHOOTER_PLAYER, 5.0
 
         elif event_type == Events.GROUP_SHOOTOUT:
-            num_enemies = random.randint(conditions.get("min_enemies", 3), conditions.get("max_enemies", 6))
+            num_enemies = random.randint(conditions.get("min_enemies", 5), conditions.get("max_enemies", 8))
             enemies = self.calc.calculate_group_shootout_hp(num_enemies)
-            killed = 0
+            killed, survived_rounds = 0, 0
             
-            while killed < num_enemies and p_hp > 0 and len(duel_steps) < 30:
+            group_multipliers = {
+                5: [0.0, 5.0, 10.0, 25.0, 60.0, 150.0, 300.0],
+                6: [0.0, 6.0, 15.0, 35.0, 80.0, 200.0, 400.0],
+                7: [0.0, 7.0, 20.0, 50.0, 120.0, 300.0, 500.0],
+                8: [0.0, 8.0, 25.0, 60.0, 150.0, 400.0, 500.0]
+            }
+            
+            while p_hp > 0 and survived_rounds < 6:
                 alive_enemies = [e for e, hp in enemies.items() if hp > 0]
-                if not alive_enemies:
-                    break
+                if not alive_enemies: break
                     
                 target_enemy = random.choice(alive_enemies)
-                zone = self.calc.get_hit_target(True, bet_mode_obj)
-                
-                if force_wincap:
-                    zone = Events.TARGET_HEAD
+                # JAVÍTVA: conditions használata
+                zone = self.calc.get_hit_target(True, conditions)
+                if force_wincap: zone = Events.TARGET_HEAD
                     
-                damage = self.calc.calculate_damage(zone, False, bet_mode_obj)
-                
+                damage = self.calc.calculate_damage(zone, False, conditions)
                 if zone != Events.TARGET_FAIL:
                     enemies[target_enemy] = max(0.0, round(enemies[target_enemy] - damage, 1))
-                    if enemies[target_enemy] == 0.0:
-                        killed += 1
+                    if enemies[target_enemy] == 0.0: killed += 1
                         
                 duel_steps.append({
-                    "Shooter": Events.SHOOTER_PLAYER,
-                    "Target": zone,
-                    "PlayerHP": p_hp,
-                    "EnemyHP": enemies.get(target_enemy, 0.0),
+                    "Shooter": Events.SHOOTER_PLAYER, "Target": zone,
+                    "PlayerHP": float(p_hp), "EnemyHP": float(enemies.get(target_enemy, 0.0)),
                     "enemiesHP": enemies.copy()
                 })
                 
                 alive_enemies = [e for e, hp in enemies.items() if hp > 0]
-                if alive_enemies and killed < num_enemies:
-                    shooting_enemy = random.choice(alive_enemies)
-                    
-                    e_zone = self.calc.get_hit_target(False, bet_mode_obj)
-                    if force_wincap:
-                        e_zone = Events.TARGET_FAIL
+                for shooting_enemy in alive_enemies:
+                    if p_hp <= 0: break
+                    # JAVÍTVA: conditions használata
+                    e_zone = self.calc.get_hit_target(False, conditions)
+                    if force_wincap: e_zone = Events.TARGET_FAIL
                         
-                    e_damage = self.calc.calculate_damage(e_zone, True, bet_mode_obj)
-                    
+                    e_damage = self.calc.calculate_damage(e_zone, True, conditions)
                     if e_zone != Events.TARGET_FAIL:
                         p_hp = max(0.0, round(p_hp - e_damage, 1))
                         
                     duel_steps.append({
-                        "Shooter": Events.SHOOTER_ENEMY,
-                        "Target": e_zone,
-                        "PlayerHP": p_hp,
-                        "EnemyHP": enemies[shooting_enemy],
+                        "Shooter": Events.SHOOTER_ENEMY, "ShooterID": shooting_enemy,
+                        "Target": e_zone, "PlayerHP": float(p_hp), "EnemyHP": float(enemies[shooting_enemy]),
                         "enemiesHP": enemies.copy()
                     })
+                    
+                if p_hp > 0: survived_rounds += 1
 
-            if force_wincap:
-                final_multiplier = self.config.wincap
-            else:
-                final_multiplier = killed * 3.0
-            
+            mult_list = group_multipliers.get(num_enemies, group_multipliers[5])
+            safe_idx = min(survived_rounds, len(mult_list) - 1)
+            final_multiplier = mult_list[safe_idx] + (killed * 3.0)
             winner = Events.SHOOTER_PLAYER if killed == num_enemies else Events.SHOOTER_ENEMY
 
-        if force_wincap:
+        if final_multiplier > self.config.wincap or force_wincap:
             final_multiplier = self.config.wincap
+            
+        final_multiplier = float(final_multiplier)
+        total_win_amount = cost * final_multiplier
 
         self.current_timeline = {
             "eventType": event_type, 
             "steps": duel_steps, 
-            "winner": winner
+            "winner": winner,
+            "multiplier": final_multiplier 
         }
 
-        total_win_amount = cost * final_multiplier
-
+        self.spin_payout = total_win_amount
+        self.win_manager.update_spinwin(total_win_amount)
+        self.win_manager.update_gametype_wins(self.win_manager.base_game_mode)
+        
         self.book.add_event({
             "index": len(self.book.events),
             "type": EventConstants.WIN_DATA.value,
             "numberRolled": int(sim + 1),
-            "round_data": self.current_timeline,
-            "finalMultiplier": float(final_multiplier)
+            "round_data": self.current_timeline
         })
 
-        self.win_manager.update_spinwin(total_win_amount)
-        self.win_manager.update_gametype_wins(self.gametype)
         self.update_final_win()
         self.imprint_wins()
 

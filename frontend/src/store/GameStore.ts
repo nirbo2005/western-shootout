@@ -6,7 +6,9 @@ const initialBalance = savedBalance ? parseFloat(savedBalance) : 1000;
 export const currentBalance = writable<number>(initialBalance);
 export const gameState = writable<'IDLE' | 'SHOOTING' | 'RESULT' | 'COOLDOWN'>('IDLE');
 export const duelCooldown = writable<number>(0);
+
 export const baseBet = writable<number>(1.0);
+export const selectedCharacter = writable<string>('hero'); 
 
 export const isMagnetActive = writable<boolean>(false);
 export const isArmorActive = writable<boolean>(false);
@@ -33,35 +35,32 @@ export const betHistory = writable<Array<{
     payout: number;
 }>>([]);
 
-currentBalance.subscribe(value => {
+currentBalance.subscribe((value: number) => {
     if (typeof sessionStorage !== 'undefined') {
         sessionStorage.setItem('mock_stake_balance', value.toString());
     }
 });
 
-// Total Bet kiszámítása a költségszorzók alapján (a game_config.py szerint)
 export const totalBet = derived(
     [baseBet, isMagnetActive, isArmorActive],
-    ([$base, $magnet, $armor]) => {
-        let multiplier = 1.0;
-        if ($magnet && $armor) multiplier = 2.3;
-        else if ($magnet) multiplier = 1.8;
-        else if ($armor) multiplier = 1.5;
+    ([$base, $magnet, $armor]: [number, boolean, boolean]) => {
+        let costMultiplier = 1.0;
+        if ($magnet && $armor) costMultiplier = 2.3;
+        else if ($magnet) costMultiplier = 1.8;
+        else if ($armor) costMultiplier = 1.5;
         
-        return Number(($base * multiplier).toFixed(2));
+        return Number(($base * costMultiplier).toFixed(2));
     }
 );
 
-// Potenciális Max Win a config wincap (500x) alapján
 export const potentialMaxWin = derived(
-    [totalBet],
-    ([$total]) => Number(($total * 500).toFixed(2))
+    [baseBet],
+    ([$base]: [number]) => Number(($base * 500).toFixed(2))
 );
 
-// Játékmód meghatározása a flag-ek alapján
 export const currentBetMode = derived(
     [isMagnetActive, isArmorActive],
-    ([$magnet, $armor]) => {
+    ([$magnet, $armor]: [boolean, boolean]) => {
         if ($magnet && $armor) return 'extreme';
         if ($magnet) return 'magnet';
         if ($armor) return 'armor';
@@ -79,7 +78,7 @@ export function resetDuelState() {
 }
 
 export function spendBullet(index: number) {
-    chambers.update(c => {
+    chambers.update((c: boolean[]) => {
         const newChambers = [...c];
         if (index >= 0 && index < 6) newChambers[index] = false;
         return newChambers;
@@ -87,5 +86,16 @@ export function spendBullet(index: number) {
 }
 
 export function setTotalBetManually(newTotal: number) {
-    baseBet.set(Number(newTotal.toFixed(2)));
+    let costMultiplier = 1.0;
+    
+    isMagnetActive.subscribe((m: boolean) => {
+        isArmorActive.subscribe((a: boolean) => {
+            if (m && a) costMultiplier = 2.3;
+            else if (m) costMultiplier = 1.8;
+            else if (a) costMultiplier = 1.5;
+        })();
+    })();
+
+    const calculatedBase = newTotal / costMultiplier;
+    baseBet.set(Number(calculatedBase.toFixed(2)));
 }
