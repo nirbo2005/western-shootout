@@ -162,6 +162,11 @@ class GameEngine {
         }
     }
 
+    // ÚJ: Azonnali ugrás a megadott HP-ra (Resume State-hez)
+    public jumpToHP(logicalPVal: number, logicalEVal: number) {
+        this.updateHPVisuals(logicalPVal, logicalEVal);
+    }
+
     public setupGroupShootoutEnemies(count: number) {
         const char = get(selectedCharacter);
         

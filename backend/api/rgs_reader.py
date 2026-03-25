@@ -8,7 +8,6 @@ from typing import Dict, Any, Optional
 
 class RGSReader:
     def __init__(self):
-        # A root_path most már a hivatalos game_id mappára (stake_western_95) mutat
         self.root_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), 
             "..", 
@@ -17,10 +16,12 @@ class RGSReader:
             "stake_western_95", 
             "library"
         ))
+        
+        # A cache már csak az ID-kat és a súlyokat tárolja, NEM a teljes JSON-t!
         self.cache: Dict[str, dict] = {}
-        self.load_all_data()
+        self.load_index_data()
 
-    def load_all_data(self):
+    def load_index_data(self):
         modes = ["base", "armor", "magnet", "extreme"]
         
         for mode in modes:
@@ -44,15 +45,6 @@ class RGSReader:
 
             if valid_book and valid_csv:
                 try:
-                    books_dict = {}
-                    with open(valid_book, 'rb') as f:
-                        dctx = zstd.ZstdDecompressor()
-                        with dctx.stream_reader(f) as reader:
-                            text_stream = io.TextIOWrapper(reader, encoding='utf-8')
-                            for line in text_stream:
-                                row = json.loads(line)
-                                books_dict[row['id']] = row
-                    
                     cum_weights = []
                     sim_ids = []
                     current_cum = 0
@@ -72,16 +64,35 @@ class RGSReader:
                                 continue 
 
                     self.cache[mode] = {
-                        'books': books_dict,
+                        'book_path': valid_book, # Csak az útvonalat mentjük el!
                         'cum_weights': cum_weights,
                         'sim_ids': sim_ids,
                         'total_weight': current_cum
                     }
-                    print(f"INFO: Loaded {mode} ({len(books_dict)} rows, total weight: {current_cum})")
+                    print(f"INFO: Indexed {mode} (total weight: {current_cum})")
                 except Exception as e:
-                    print(f"ERROR: Failed to load data for {mode}: {e}")
+                    print(f"ERROR: Failed to load index data for {mode}: {e}")
             else:
                 print(f"WARNING: Missing book or CSV for {mode}.")
+
+    def _fetch_single_row_from_zst(self, book_path: str, target_id: int) -> Optional[Dict[str, Any]]:
+        """Lassan, de memóriabiztosan kikeresi az egyetlen nyertes sort a tömörített fájlból."""
+        try:
+            with open(book_path, 'rb') as f:
+                dctx = zstd.ZstdDecompressor()
+                with dctx.stream_reader(f) as reader:
+                    text_stream = io.TextIOWrapper(reader, encoding='utf-8')
+                    for line in text_stream:
+                        if not line.strip(): continue
+                        # Csak egy gyors string keresés (gyorsabb, mint minden sort JSON parse-olni)
+                        if f'"id": {target_id},' in line or f'"id":{target_id},' in line:
+                            row = json.loads(line)
+                            if row['id'] == target_id:
+                                return row
+            return None
+        except Exception as e:
+            print(f"ERROR reading zst: {e}")
+            return None
 
     def get_row_by_float(self, mode: str, result_float: float) -> Optional[Dict[str, Any]]:
         current_mode = mode if mode in self.cache and self.cache[mode] else "base"
@@ -101,10 +112,12 @@ class RGSReader:
         idx = min(idx, len(data['sim_ids']) - 1)
         
         selected_id = data['sim_ids'][idx]
-        return data['books'].get(selected_id)
+        
+        # 3. Lépés: Most, hogy megvan a nyertes ID, kiolvassuk a fájlból
+        return self._fetch_single_row_from_zst(data['book_path'], selected_id)
 
     def reload_cache(self):
         self.cache.clear()
-        self.load_all_data()
+        self.load_index_data()
 
 rgs_reader = RGSReader()

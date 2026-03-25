@@ -35,18 +35,18 @@ def apply_sdk_patches():
 if __name__ == "__main__":
     apply_sdk_patches()
 
-    # KONFIGURÁCIÓS VÁLTOZÓK DEFINIÁLÁSA (A Pylance hiba javítása)
-    num_threads = 4
-    batching_size = 5000
+    # KONFIGURÁCIÓS VÁLTOZÓK DEFINIÁLÁSA
+    num_threads = 8          # 8 magra állítva a gyorsabb futásért
+    batching_size = 250000   # 4 batch-ben fog lefutni módonként
     compression = True
     profiling = False
 
-    # 100.000 mintaszám a pontosabb RTP érdekében
+    # Pontosan 1.000.000 mintaszám a PREDETERMINÁLT MÁTRIX (Excel) miatt!
     num_sim_args = {
-        "base": 100000,
-        "armor": 100000,
-        "magnet": 100000,
-        "extreme": 100000,
+        "base": 1000000,
+        "armor": 1000000,
+        "magnet": 1000000,
+        "extreme": 1000000,
     }
     
     # A game_id megfelel a provider_gameName_rtp formátumnak
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     config = GameConfig(game_id)
     gamestate = GameState(config)
 
-    print(f"Starting simulation for {game_id} with 100k samples per mode...")
+    print(f"Starting simulation for {game_id} with 1 MILLION samples per mode...")
     
     # Könyvgenerálás a definiált változókkal
     create_books(

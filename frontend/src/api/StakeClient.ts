@@ -1,9 +1,16 @@
-import { currentBalance, serverSeedHash, currentNonce, clientSeed, previousServerSeed } from '../store/GameStore';
+import { currentBalance, serverSeedHash, currentNonce, clientSeed, previousServerSeed, errorMessage, isAutoBetActive } from '../store/GameStore';
 import { get } from 'svelte/store';
 import type { DuelResponse, GameStatus, RgsEvent } from '../types/rgs-schema';
 
 export class StakeClient {
     private readonly BASE_URL = 'http://localhost:8000';
+
+    private handleError(message: string) {
+        console.error(`[StakeClient Hiba]: ${message}`);
+        errorMessage.set(message);
+        // Ha auto-bet ment éppen, állítsuk le hiba esetén!
+        isAutoBetActive.set(false);
+    }
 
     public async initialize(): Promise<{ status: string }> {
         try {
@@ -19,9 +26,12 @@ export class StakeClient {
                 if (data.client_seed) {
                     clientSeed.set(data.client_seed);
                 }
+            } else {
+                this.handleError("Backend szerver elérhető, de hibás státuszt adott vissza.");
             }
         } catch (e) {
             console.warn("Backend nem elérhető inicializáláskor. (Hálózat vagy CORS hiba)");
+            this.handleError("Nem sikerült csatlakozni a játékszerverhez. Kérlek, ellenőrizd a kapcsolatot!");
         }
         return { status: "ready" };
     }
@@ -33,7 +43,8 @@ export class StakeClient {
             });
             
             if (!response.ok) {
-                throw new Error(`HTTP hiba: ${response.status}`);
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP hiba: ${response.status}`);
             }
             
             const data = await response.json();
@@ -43,13 +54,24 @@ export class StakeClient {
         } catch (error: any) {
             console.error("Seed rotation error:", error);
             if (error instanceof TypeError && error.message.includes('fetch')) {
-                throw new Error("Nem sikerült csatlakozni a szerverhez (Network/CORS hiba).");
+                this.handleError("Nem sikerült a seed csere. (Hálózat/CORS hiba)");
+            } else {
+                this.handleError(`Hiba a seed cseréjekor: ${error.message}`);
             }
             throw error;
         }
     }
 
     public async play(totalBet: number, baseBet: number, mode: string, selectedCharacter: string = 'hero'): Promise<DuelResponse> {
+        
+        // 1. Kliens oldali egyenleg ellenőrzés (hogy elkerüljük a felesleges API hívást)
+        const balance = get(currentBalance);
+        if (balance < totalBet) {
+            const err = "Nincs elegendő egyenleged a pörgetéshez!";
+            this.handleError(err);
+            throw new Error(err);
+        }
+
         try {
             const payload = {
                 bet: totalBet,
@@ -72,7 +94,10 @@ export class StakeClient {
                 const detail = typeof errorData.detail === 'string' 
                     ? errorData.detail 
                     : JSON.stringify(errorData.detail);
-                throw new Error(detail || `Szerver hiba történt (HTTP ${response.status})`);
+                
+                const errMsg = detail || `Szerver hiba történt (HTTP ${response.status})`;
+                this.handleError(errMsg);
+                throw new Error(errMsg);
             }
 
             const data: DuelResponse = await response.json();
@@ -103,13 +128,16 @@ export class StakeClient {
                 currentNonce.set(data.nonce);
             }
 
+            // Pénz azonnali levonása a sikeres válasz után
             currentBalance.update(b => b - totalBet);
 
             return data;
         } catch (error: any) {
             console.error("Stake API Play Error:", error);
             if (error instanceof TypeError && error.message.includes('fetch')) {
-                throw new Error("Nem sikerült csatlakozni a szerverhez. Ellenőrizd, hogy fut-e a backend.");
+                const errMsg = "Nem sikerült csatlakozni a szerverhez. Ellenőrizd, hogy fut-e a backend.";
+                this.handleError(errMsg);
+                throw new Error(errMsg);
             }
             throw error;
         }
@@ -126,7 +154,8 @@ export class StakeClient {
             });
 
             if (!response.ok) {
-                throw new Error(`End-round hiba: ${response.status}`);
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `End-round hiba: ${response.status}`);
             }
 
             if (payout > 0) {
@@ -134,8 +163,9 @@ export class StakeClient {
                 console.log(`[RGS END-ROUND] Sikeres körlezárás. Jóváírva: ${payout}`);
             }
 
-        } catch (error) {
+        } catch (error: any) {
             console.error("Stake API End-Round Error:", error);
+            this.handleError(`Hiba a kifizetés jóváírásakor: ${error.message}`);
             throw error;
         }
     }

@@ -7,6 +7,12 @@ export const currentBalance = writable<number>(initialBalance);
 export const gameState = writable<'IDLE' | 'SHOOTING' | 'RESULT' | 'COOLDOWN'>('IDLE');
 export const duelCooldown = writable<number>(0);
 
+// --- ÚJ: ÁLLAPOTMENTÉS VÁLTOZÓK (RESUME STATE) ---
+export const currentStepIndex = writable<number>(0);
+export const isResuming = writable<boolean>(false);
+export const storedActiveGame = writable<any | null>(null);
+// -------------------------------------------------
+
 export const baseBet = writable<number>(1.0);
 export const selectedCharacter = writable<string>('hero'); 
 
@@ -25,6 +31,10 @@ export const serverSeedHash = writable<string>("Ismeretlen");
 export const previousServerSeed = writable<string | null>(null);
 export const clientSeed = writable<string>("lucky-seed");
 export const currentNonce = writable<number>(0);
+
+export const errorMessage = writable<string | null>(null);
+export const isAutoBetActive = writable<boolean>(false);
+export const autoSpinsLeft = writable<number>(0);
 
 export const betHistory = writable<Array<{
     id: string;
@@ -88,6 +98,7 @@ export function spendBullet(index: number) {
 export function setTotalBetManually(newTotal: number) {
     let costMultiplier = 1.0;
     
+    // Nem a legszebb, de szinkron módon kiolvassuk a bolleanokat Svelte 5 előtt
     isMagnetActive.subscribe((m: boolean) => {
         isArmorActive.subscribe((a: boolean) => {
             if (m && a) costMultiplier = 2.3;
@@ -98,4 +109,55 @@ export function setTotalBetManually(newTotal: number) {
 
     const calculatedBase = newTotal / costMultiplier;
     baseBet.set(Number(calculatedBase.toFixed(2)));
+}
+
+// --- ÚJ: ÁLLAPOTMENTÉS LOGIKA (LOCALSTORAGE) ---
+const STORAGE_KEY_GAME = 'western_shootout_active_game';
+const STORAGE_KEY_STEP = 'western_shootout_step_index';
+
+export function saveGameState(gameData: any, stepIndex: number) {
+    if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(STORAGE_KEY_GAME, JSON.stringify(gameData));
+        localStorage.setItem(STORAGE_KEY_STEP, stepIndex.toString());
+    }
+    storedActiveGame.set(gameData);
+    currentStepIndex.set(stepIndex);
+}
+
+export function loadGameState(): boolean {
+    if (typeof localStorage !== 'undefined') {
+        const savedGame = localStorage.getItem(STORAGE_KEY_GAME);
+        const savedStep = localStorage.getItem(STORAGE_KEY_STEP);
+        
+        if (savedGame && savedStep) {
+            try {
+                const parsedGame = JSON.parse(savedGame);
+                const parsedStep = parseInt(savedStep, 10);
+                
+                storedActiveGame.set(parsedGame);
+                currentStepIndex.set(parsedStep);
+                isResuming.set(true);
+                return true;
+            } catch (e) {
+                console.error("Hibás mentett állapot, törlés...", e);
+                clearGameState();
+            }
+        }
+    }
+    return false;
+}
+
+export function clearGameState() {
+    if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(STORAGE_KEY_GAME);
+        localStorage.removeItem(STORAGE_KEY_STEP);
+    }
+    storedActiveGame.set(null);
+    currentStepIndex.set(0);
+    isResuming.set(false);
+}
+
+// Betöltéskor azonnal ellenőrizzük a megszakított játékot
+if (typeof window !== 'undefined') {
+    loadGameState();
 }

@@ -25,8 +25,9 @@ class GameState(GameStateOverride):
 
         bet_mode_obj = self.get_current_betmode()
         cost = getattr(bet_mode_obj, '_cost', getattr(bet_mode_obj, 'cost', 1.0))
+        mode_name = getattr(bet_mode_obj, '_name', getattr(bet_mode_obj, 'name', "base"))
         
-        # KONDÍCIÓK KINYERÉSE (Ezt kell használni a harcban!)
+        # Kondíciók kinyerése
         conditions = {}
         dist = self.get_current_betmode_distributions()
         if hasattr(dist, 'conditions'):
@@ -40,26 +41,38 @@ class GameState(GameStateOverride):
         force_angel = conditions.get("force_angel_revive", False)
         force_wincap = conditions.get("force_wincap", False)
         
-        draw_chance = conditions.get("base_draw_chance", 0.150)
-        win_chance = conditions.get("base_win_chance", 0.290)
+        # 1. BIZTOSÍTÉK: Ha nincs ott a predeterminált dictionary, fallback a régire (biztonság)
+        standard_weights = conditions.get("standard_weights", {"win": 284287, "draw": 147885, "lose": 553728})
 
+        # ---------------------------------------------------------------------
+        # SORSOLÁSI LOGIKA (Előre Determinált)
+        # ---------------------------------------------------------------------
         if force_group:
             event_type = Events.GROUP_SHOOTOUT
         elif force_angel:
             event_type = Events.ANGEL_REVIVE
         else:
-            rand_type = random.random()
-            if rand_type < draw_chance:
-                event_type = Events.STANDARD_DRAW
-            elif rand_type < (draw_chance + win_chance):
-                event_type = Events.STANDARD_WIN
+            total_std_weight = standard_weights["win"] + standard_weights["draw"] + standard_weights["lose"]
+            if total_std_weight > 0:
+                # Precíz húzás a megadott Excel darabszámokból
+                rand_val = random.randint(1, total_std_weight)
+                if rand_val <= standard_weights["draw"]:
+                    event_type = Events.STANDARD_DRAW
+                elif rand_val <= (standard_weights["draw"] + standard_weights["win"]):
+                    event_type = Events.STANDARD_WIN
+                else:
+                    event_type = Events.STANDARD_LOSE
             else:
+                # Vészhelyzeti fallback (ha hibás a config)
                 event_type = Events.STANDARD_LOSE
 
         duel_steps = []
         p_hp, e_hp = 100.0, 100.0
         final_multiplier = 0.0
         winner = "NONE"
+
+        # Célzott Group kimenetel
+        target_group_outcome = None
 
         if event_type in [Events.STANDARD_WIN, Events.STANDARD_LOSE]:
             turn = Events.SHOOTER_PLAYER if random.random() > 0.5 else Events.SHOOTER_ENEMY
@@ -68,12 +81,12 @@ class GameState(GameStateOverride):
                 attacker = turn
                 is_p_atk = (attacker == Events.SHOOTER_PLAYER)
                 
+                # Biztosíték: Garantált fejlövés a 10. lépésnél, ha muszáj befejezni
                 if (event_type == Events.STANDARD_WIN and is_p_atk and len(duel_steps) >= 10) or \
                    (event_type == Events.STANDARD_LOSE and not is_p_atk and len(duel_steps) >= 10):
                     zone = Events.TARGET_HEAD
                     damage = e_hp if is_p_atk else p_hp
                 else:
-                    # JAVÍTVA: bet_mode_obj helyett conditions!
                     zone = self.calc.get_hit_target(is_p_atk, conditions)
                     damage = self.calc.calculate_damage(zone, not is_p_atk, conditions)
                     
@@ -110,10 +123,10 @@ class GameState(GameStateOverride):
             while len(duel_steps) < draw_length:
                 attacker = turn
                 is_p_atk = (attacker == Events.SHOOTER_PLAYER)
-                # JAVÍTVA: bet_mode_obj helyett conditions!
                 zone = self.calc.get_hit_target(is_p_atk, conditions)
                 damage = self.calc.calculate_damage(zone, not is_p_atk, conditions)
                 
+                # Halál megakadályozása mindkét oldalon
                 if is_p_atk and (e_hp - damage <= 0):
                     zone = Events.TARGET_FAIL
                     damage = 0.0
@@ -142,66 +155,37 @@ class GameState(GameStateOverride):
             winner, final_multiplier = Events.SHOOTER_PLAYER, 5.0
 
         elif event_type == Events.GROUP_SHOOTOUT:
-            num_enemies = random.randint(conditions.get("min_enemies", 5), conditions.get("max_enemies", 8))
-            enemies = self.calc.calculate_group_shootout_hp(num_enemies)
-            killed, survived_rounds = 0, 0
+            matrix = getattr(self.config, "group_shootout_matrix", {}).get(mode_name, [])
             
-            group_multipliers = {
-                5: [0.0, 5.0, 10.0, 25.0, 60.0, 150.0, 300.0],
-                6: [0.0, 6.0, 15.0, 35.0, 80.0, 200.0, 400.0],
-                7: [0.0, 7.0, 20.0, 50.0, 120.0, 300.0, 500.0],
-                8: [0.0, 8.0, 25.0, 60.0, 150.0, 400.0, 500.0]
-            }
-            
-            while p_hp > 0 and survived_rounds < 6:
-                alive_enemies = [e for e, hp in enemies.items() if hp > 0]
-                if not alive_enemies: break
-                    
-                target_enemy = random.choice(alive_enemies)
-                # JAVÍTVA: conditions használata
-                zone = self.calc.get_hit_target(True, conditions)
-                if force_wincap: zone = Events.TARGET_HEAD
-                    
-                damage = self.calc.calculate_damage(zone, False, conditions)
-                if zone != Events.TARGET_FAIL:
-                    enemies[target_enemy] = max(0.0, round(enemies[target_enemy] - damage, 1))
-                    if enemies[target_enemy] == 0.0: killed += 1
-                        
-                duel_steps.append({
-                    "Shooter": Events.SHOOTER_PLAYER, "Target": zone,
-                    "PlayerHP": float(p_hp), "EnemyHP": float(enemies.get(target_enemy, 0.0)),
-                    "enemiesHP": enemies.copy()
-                })
+            if matrix:
+                outcomes, weights = zip(*[( (o[0], o[1], o[2]), o[3] ) for o in matrix])
+                target_outcome = random.choices(outcomes, weights=weights, k=1)[0]
                 
-                alive_enemies = [e for e, hp in enemies.items() if hp > 0]
-                for shooting_enemy in alive_enemies:
-                    if p_hp <= 0: break
-                    # JAVÍTVA: conditions használata
-                    e_zone = self.calc.get_hit_target(False, conditions)
-                    if force_wincap: e_zone = Events.TARGET_FAIL
-                        
-                    e_damage = self.calc.calculate_damage(e_zone, True, conditions)
-                    if e_zone != Events.TARGET_FAIL:
-                        p_hp = max(0.0, round(p_hp - e_damage, 1))
-                        
-                    duel_steps.append({
-                        "Shooter": Events.SHOOTER_ENEMY, "ShooterID": shooting_enemy,
-                        "Target": e_zone, "PlayerHP": float(p_hp), "EnemyHP": float(enemies[shooting_enemy]),
-                        "enemiesHP": enemies.copy()
-                    })
-                    
-                if p_hp > 0: survived_rounds += 1
-
-            mult_list = group_multipliers.get(num_enemies, group_multipliers[5])
-            safe_idx = min(survived_rounds, len(mult_list) - 1)
-            final_multiplier = mult_list[safe_idx] + (killed * 3.0)
-            winner = Events.SHOOTER_PLAYER if killed == num_enemies else Events.SHOOTER_ENEMY
+                num_enemies = target_outcome[0]
+                target_rounds = target_outcome[1]
+                final_multiplier = target_outcome[2]
+                
+                # Cél elmentése
+                target_group_outcome = target_outcome
+            else:
+                num_enemies = random.randint(5, 8)
+                target_rounds = random.randint(1, 6)
+                final_multiplier = 10.0
+            
+            duel_steps, p_hp, winner = self.calc.generate_predetermined_group_shootout(
+                num_enemies, target_rounds, conditions
+            )
 
         if final_multiplier > self.config.wincap or force_wincap:
             final_multiplier = self.config.wincap
             
         final_multiplier = float(final_multiplier)
-        total_win_amount = cost * final_multiplier
+        
+        # ---------------------------------------------------------------------
+        # KIFIZETÉS JAVÍTÁSA (V4 COST-AWARE MODELL)
+        # A nyeremény mindig az 1.0x-es alaptétre vonatkozik, nem a mód árára (cost)!
+        # ---------------------------------------------------------------------
+        total_win_amount = 1.0 * final_multiplier
 
         self.current_timeline = {
             "eventType": event_type, 
@@ -209,6 +193,12 @@ class GameState(GameStateOverride):
             "winner": winner,
             "multiplier": final_multiplier 
         }
+        
+        if event_type == Events.GROUP_SHOOTOUT and target_group_outcome:
+            self.current_timeline["target_outcome"] = {
+                "enemies": target_group_outcome[0],
+                "rounds": target_group_outcome[1]
+            }
 
         self.spin_payout = total_win_amount
         self.win_manager.update_spinwin(total_win_amount)

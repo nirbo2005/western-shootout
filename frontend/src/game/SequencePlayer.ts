@@ -8,7 +8,14 @@ import {
     resetDuelState,
     betHistory,
     currentBetMode,
-    selectedCharacter
+    selectedCharacter,
+    saveGameState,
+    clearGameState,
+    isAutoBetActive,
+    autoSpinsLeft,
+    totalBet,
+    baseBet,
+    isResuming // <-- ÚJ IMPORT
 } from '../store/GameStore';
 import { get } from 'svelte/store';
 import { gameEngine } from './GameEngine';
@@ -27,7 +34,7 @@ class SequencePlayer {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    public async play(data: DuelResponse) {
+    public async play(data: DuelResponse, skipToStep: number = 0) {
         if (this.isPlaying) return;
         
         // 1. Az események kinyerése az RGS 'events' tömbből
@@ -37,25 +44,27 @@ class SequencePlayer {
         if (!timeline || !timeline.steps) {
             console.error("[SequencePlayer] Érvénytelen válasz struktúra (Nincs round_data):", data);
             gameState.set('IDLE');
+            // Ha hiba van, leállítjuk az autobetet
+            isAutoBetActive.set(false);
+            if (get(isResuming)) isResuming.set(false);
             return;
         }
-
-        // KONZOL LOG: A nyers round_data kiírása a debugoláshoz
-        console.group("%c🎯 RGS ROUND DATA LEJÁTSZÁSA", "color: #00ff00; font-weight: bold; font-size: 12px;");
-        console.log("Esemény típusa:", timeline.eventType);
-        console.log("Győztes:", timeline.winner);
-        console.table(timeline.steps);
-        console.groupEnd();
         
         this.isPlaying = true;
 
         try {
             const steps = timeline.steps;
             
-            // 2. Előkészítés (reseteljük a vizualitást és alkalmazzuk a friss store állapotokat)
-            gameEngine.cleanup();
-            gameEngine.updateVisualsFromStores();
-            resetDuelState();
+            // 2. Előkészítés
+            if (skipToStep === 0) {
+                gameEngine.cleanup();
+                gameEngine.updateVisualsFromStores();
+                resetDuelState();
+                
+                // Mentsük le a friss játékot az első lépés előtt
+                saveGameState(data, 0);
+            }
+            
             gameState.set('SHOOTING');
 
             // 3. Minigame specifikus setupok
@@ -67,19 +76,34 @@ class SequencePlayer {
                 // Az angyal később spawnol a steps során
             }
 
-            // 4. Lépések lejátszása
+            // 4. Lépések lejátszása (vagy átugrása)
             let playerShotCount = 0;
+            
             for (let i = 0; i < steps.length; i++) {
                 const step = steps[i];
 
-                // Körök kezelése (Modulo 6 forgatás a RevolverUI-ban)
                 if (step.Shooter === 'PLAYER') {
                     playerShotCount++;
                     currentRound.set(playerShotCount);
                 }
 
+                // Ha Resume módban vagyunk, átugorjuk az animációt a célig
+                if (i < skipToStep) {
+                    this.fastForwardStep(step, timeline.eventType, playerShotCount);
+                    continue;
+                }
+
+                // --- HIBAJAVÍTÁS: ELTÜNTETJÜK AZ OVERLAY-T ---
+                // Amint elérünk az első "valós" animációhoz, levesszük a homályosítást!
+                if (get(isResuming)) {
+                    isResuming.set(false);
+                }
+                // ----------------------------------------------
+
                 try {
                     await this.processStep(step, timeline.eventType);
+                    // Állapotmentés minden sikeres animált lépés után
+                    saveGameState(data, i + 1);
                 } catch (stepError) {
                     console.warn("[SequencePlayer] Hiba egy lépésnél:", stepError);
                 }
@@ -87,26 +111,83 @@ class SequencePlayer {
                 await this.delay(350);
             }
 
-            // 5. Eredmény megjelenítése
+            // Biztosíték: Ha véletlenül pont a játék legvégén frissített rá, akkor is eltüntetjük az overlay-t a Result előtt
+            if (get(isResuming)) {
+                isResuming.set(false);
+            }
+
+            // 5. Eredmény megjelenítése és takarítás
             await this.handleResult(data, timeline);
+            clearGameState(); // Töröljük a localStorage-t, a játék sikeresen befejeződött!
 
         } catch (error) {
             console.error("[SequencePlayer] Kritikus hiba:", error);
             gameEngine.showResultText("Rendszerhiba", 0xffffff);
             await this.delay(2000);
             gameState.set('IDLE');
+            isAutoBetActive.set(false);
+            if (get(isResuming)) isResuming.set(false);
         } finally {
             this.isPlaying = false;
         }
     }
 
-    private async processStep(step: DuelStep, eventType: string) {
-        // GROUP_SHOOTOUT esetén a backend a specifikus ellenség ID-ját a ShooterID-ben küldi
+    // Animáció nélküli, gyors állapotbeállítás (Resume-hoz)
+    private fastForwardStep(step: DuelStep, eventType: string, playerShotCount: number) {
         const shooterId = (step as any).ShooterID || step.Shooter;
         const targetZone = step.Target;
         const isHit = targetZone !== 'FAIL';
 
-        // 1. Célpont meghatározása
+        // Angyal spawnolása csendben
+        if (shooterId === 'ANGEL' && !gameEngine.extraCharacters.has('ANGEL')) {
+            gameEngine.spawnAngel();
+        }
+
+        // Töltények elhasználása
+        if (shooterId === 'PLAYER') {
+            spendBullet((playerShotCount - 1) % 6);
+        }
+
+        // Halál animációk beállítása azonnal
+        if (isHit) {
+            let targetId = 'ENEMY';
+            if (step.Shooter === 'PLAYER') {
+                if (eventType === 'GROUP_SHOOTOUT' && step.enemiesHP) {
+                    const aliveEnemies = Object.keys(step.enemiesHP).filter(id => step.enemiesHP![id] > 0);
+                    targetId = aliveEnemies[0] || 'ENEMY_1';
+                }
+            } else if (step.Shooter === 'ANGEL') {
+                targetId = 'PLAYER';
+            } else {
+                targetId = 'PLAYER';
+            }
+
+            if (targetId === 'PLAYER' && step.PlayerHP !== undefined && step.PlayerHP <= 0) {
+                gameEngine.playDeathAnim('PLAYER');
+            } else if (eventType === 'GROUP_SHOOTOUT' && step.enemiesHP) {
+                Object.keys(step.enemiesHP).forEach(id => {
+                    if (step.enemiesHP![id] <= 0) {
+                        gameEngine.playDeathAnim(id);
+                    }
+                });
+            } else if (targetId === 'ENEMY' && step.EnemyHP !== undefined && step.EnemyHP <= 0) {
+                gameEngine.playDeathAnim('ENEMY');
+            }
+        }
+
+        // Store-ok frissítése
+        if (step.PlayerHP !== undefined) playerHP.set(step.PlayerHP);
+        if (step.EnemyHP !== undefined) enemyHP.set(step.EnemyHP);
+        if (step.enemiesHP) multiEnemiesHP.set(step.enemiesHP);
+        
+        gameEngine.jumpToHP(get(playerHP), get(enemyHP));
+    }
+
+    private async processStep(step: DuelStep, eventType: string) {
+        const shooterId = (step as any).ShooterID || step.Shooter;
+        const targetZone = step.Target;
+        const isHit = targetZone !== 'FAIL';
+
         let targetId = 'ENEMY';
         if (step.Shooter === 'PLAYER') {
             if (eventType === 'GROUP_SHOOTOUT') {
@@ -125,22 +206,18 @@ class SequencePlayer {
             targetId = 'PLAYER';
         }
 
-        // 2. Angyal spawnolása ha ő a lövő
         if (shooterId === 'ANGEL' && !gameEngine.extraCharacters.has('ANGEL')) {
             gameEngine.spawnAngel();
             await this.delay(800);
         }
 
-        // 3. Töltény elhasználása (RevolverUI szinkron)
         if (shooterId === 'PLAYER') {
             const currentR = get(currentRound);
             spendBullet((currentR - 1) % 6);
         }
 
-        // 4. Animáció lejátszása a GameEngine-nel (A GameEngine lefordítja a logikai ID-kat vizuális pozícióra)
         await gameEngine.playShootSequence(shooterId, targetId, isHit, targetZone);
 
-        // 5. Halál animáció triggerelése
         if (isHit) {
             if (targetId === 'PLAYER' && step.PlayerHP !== undefined && step.PlayerHP <= 0) {
                 gameEngine.playDeathAnim('PLAYER');
@@ -155,7 +232,6 @@ class SequencePlayer {
             }
         }
 
-        // 6. Store-ok frissítése az animáció után
         if (step.PlayerHP !== undefined) playerHP.set(step.PlayerHP);
         if (step.EnemyHP !== undefined) enemyHP.set(step.EnemyHP);
         if (step.enemiesHP) multiEnemiesHP.set(step.enemiesHP);
@@ -196,10 +272,55 @@ class SequencePlayer {
             }
         }
         
-        await this.delay(3000);
+        await this.delay(3000); // UI Várakozás
+        
         gameState.set('IDLE');
         gameEngine.cleanupResultText();
         gameEngine.cleanup();
+
+        // ---------------------------------------------------------
+        // AUTOBET CIKLUS VIZSGÁLATA
+        // ---------------------------------------------------------
+        if (get(isAutoBetActive)) {
+            let spinsLeft = get(autoSpinsLeft);
+            const stopOnWinStr = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ws_stop_on_win') : 'false';
+            const stopOnWin = stopOnWinStr === 'true';
+
+            // 1. Álljunk le, ha be van kapcsolva a Stop on Win és nyertünk
+            if (stopOnWin && payout > 0) {
+                this.log("Autobet leállítva (Stop on win).");
+                isAutoBetActive.set(false);
+                return;
+            }
+
+            // 2. Csökkentjük a pörgetések számát
+            spinsLeft--;
+            autoSpinsLeft.set(spinsLeft);
+
+            // 3. Ha maradt még pörgetés, indítsuk újra!
+            if (spinsLeft > 0) {
+                this.log(`Autobet folytatódik. Hátralévő: ${spinsLeft}`);
+                
+                // Kis szünet, mielőtt újra meghívja az API-t
+                await this.delay(100);
+                
+                try {
+                    const activeTotalBet = get(totalBet);
+                    const activeBaseBet = get(baseBet);
+                    const modeToSend = get(currentBetMode);
+                    const charToSend = get(selectedCharacter);
+                    
+                    const response = await stakeClient.play(activeTotalBet, activeBaseBet, modeToSend, charToSend);
+                    this.play(response); // Rekurzív hívás
+                } catch (error) {
+                    console.error("Autobet megszakadt egy hiba miatt.");
+                    isAutoBetActive.set(false);
+                }
+            } else {
+                this.log("Autobet befejeződött (0 pörgetés maradt).");
+                isAutoBetActive.set(false);
+            }
+        }
     }
 }
 
